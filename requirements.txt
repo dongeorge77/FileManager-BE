@@ -1,0 +1,9 @@
+fastapi~=0.115.6
+python-multipart
+uvicorn
+pydantic~=2.10.4
+bcrypt
+psycopg2
+sqlalchemy~=2.0.36
+pyJWT
+passlib~=1.7.4
