@@ -1,6 +1,7 @@
+import json
 import traceback
 import uvicorn
-from fastapi import FastAPI, UploadFile, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, Depends, HTTPException, BackgroundTasks, File, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -12,8 +13,10 @@ import mimetypes
 
 from app_constants.app_configurations import STORAGE_PATH, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES, pwd_context
 from scripts.models.user_management import User, Token, UserCreate
-from scripts.models.folder_management import Folder, FolderCreate, DirectoryListing, FolderInfo
+from scripts.models.folder_management import (Folder, FolderCreate, DirectoryListing, FolderInfo, ListDirectory,
+                                              UploadFileModel)
 from scripts.models.file_management import FileMetadata, FileShare, FileInfo
+from scripts.models.common_models import DeleteRequest, ItemType, MoveRequest, RenameRequest, CopyRequest
 from app_constants.connectors import postgres_util, SessionLocal
 from scripts.utils.common_utils import create_jwt_token, sync_directory_with_db
 from scripts.handlers.user_management_handler import get_current_user
@@ -62,74 +65,91 @@ async def create_user(user: UserCreate, db: SessionLocal = Depends(postgres_util
         print(f"Failed to create user: {e}")
 
 
-# File Management Endpoints
-@app.post("/upload_file/")
-async def upload_file(
-        file: UploadFile,
-        folder_id: Optional[int] = None,
-        current_user: User = Depends(get_current_user),
-        db = Depends(postgres_util.get_db)
-):
-    # Create user directory if it doesn't exist
-    user_path = os.path.join(STORAGE_PATH, str(current_user.id))
-    os.makedirs(user_path, exist_ok=True)
+@app.post("/upload_file")
+async def upload_file(file: UploadFile = File(...),
+                      upload_file_model: str = Form(...),
+                      current_user: User = Depends(get_current_user),
+                      db = Depends(postgres_util.get_db)):
+    try:
+        item = UploadFileModel(**json.loads(upload_file_model)) if upload_file_model else None
+        folder_id = item.folder_id
 
-    # Save file
-    file_path = os.path.join(user_path, file.filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        # Retrieve folder details from the database
+        folder = db.query(Folder).filter_by(id=folder_id, owner_id=current_user.id).first()
+        if not folder:
+            raise HTTPException(status_code=404, detail="Folder not found.")
 
-    # Create file metadata
-    mime_type = mimetypes.guess_type(file.filename)[0]
-    file_size = os.path.getsize(file_path)
+        # Construct the folder path
+        folder_path_parts = []
+        current_folder = folder
+        while current_folder:
+            folder_path_parts.append(current_folder.name)
+            current_folder = db.query(Folder).filter_by(id=current_folder.parent_id).first()
 
-    db_file = FileMetadata(
-        filename=file.filename,
-        filepath=file_path,
-        mimetype=mime_type,
-        size=file_size,
-        folder_id=folder_id,
-        owner_id=current_user.id
-    )
-    db.add(db_file)
-    db.commit()
-    db.refresh(db_file)
-    return db_file
+        folder_path_parts.reverse()
+        folder_path = os.path.join(STORAGE_PATH, str(current_user.id), *folder_path_parts)
+        os.makedirs(folder_path, exist_ok=True)
 
+        # Check for duplicate file name in the folder
+        existing_file = db.query(FileMetadata).filter(
+            FileMetadata.folder_id == folder_id,
+            FileMetadata.filename == file.filename,
+            FileMetadata.owner_id == current_user.id,
+        ).first()
 
-class ListFiles:
-    folder_id: Optional[int] = None
-    search: Optional[str] = None
+        # Rename file if it already exists
+        original_filename = file.filename
+        if existing_file:
+            base_name, extension = os.path.splitext(original_filename)
+            counter = 1
+            while True:
+                new_filename = f"{base_name}_{counter}{extension}"
+                if not db.query(FileMetadata).filter(
+                        FileMetadata.folder_id == folder_id,
+                        FileMetadata.filename == new_filename,
+                        FileMetadata.owner_id == current_user.id,
+                ).first():
+                    file.filename = new_filename
+                    break
+                counter += 1
 
-# @app.get("/list_files")
-# async def list_files(req_data: ListFiles,
-#                      current_user: User = Depends(get_current_user),
-#                      db: SessionLocal = Depends(get_db)):
-#     query = db.query(FileMetadata).filter(FileMetadata.owner_id == current_user.id)
-#
-#     if req_data.folder_id is not None:
-#         query = query.filter(FileMetadata.folder_id == req_data.folder_id)
-#     if req_data.search:
-#         query = query.filter(FileMetadata.filename.ilike(f"%{req_data.search}%"))
-#
-#     return query.all()
+        # Save the file in the appropriate folder
+        file_path = os.path.join(folder_path, file.filename)
+        try:
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+        except IOError as e:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save file: {str(e)}"
+            )
+        finally:
+            await file.close()
 
+        # Create file metadata
+        mime_type = mimetypes.guess_type(file.filename)[0]
+        file_size = os.path.getsize(file_path)
 
-@app.post("/folders/")
-async def create_folder(
-        folder: FolderCreate,
-        current_user: User = Depends(get_current_user),
-        db: SessionLocal = Depends(postgres_util.get_db)
-):
-    db_folder = Folder(
-        name=folder.name,
-        parent_id=folder.parent_id,
-        owner_id=current_user.id
-    )
-    db.add(db_folder)
-    db.commit()
-    db.refresh(db_folder)
-    return db_folder
+        db_file = FileMetadata(
+            filename=file.filename,
+            filepath=file_path,
+            mimetype=mime_type,
+            size=file_size,
+            folder_id=folder_id,
+            owner_id=current_user.id,
+        )
+        db.add(db_file)
+        db.commit()
+        db.refresh(db_file)
+
+        return db_file
+
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON format: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error processing request: {e}")
 
 
 @app.post("/files/{file_id}/share")
@@ -180,11 +200,11 @@ async def get_shared_file(share_token: str, db: SessionLocal = Depends(postgres_
 @app.post(path="/list_directory", response_model=DirectoryListing)
 async def list_directory(
         background_tasks: BackgroundTasks,
-        folder_id: Optional[int] = None,
+        folder_details: ListDirectory,
         current_user: User = Depends(get_current_user),
         db: SessionLocal = Depends(postgres_util.get_db)
 ):
-    print(f"Sync directory in the background")
+    folder_id = folder_details.folder_id
     background_tasks.add_task(sync_directory_with_db, current_user.id, db)
 
     # Rest of your existing list_directory code remains the same
@@ -242,6 +262,352 @@ async def list_directory(
         total_files=len(file_list),
         total_size=total_size
     )
+
+
+@app.delete("/items/delete")
+async def delete_item(
+        delete_request: DeleteRequest,
+        current_user: User = Depends(get_current_user),
+        db: SessionLocal = Depends(postgres_util.get_db)
+):
+    try:
+        if delete_request.item_type == ItemType.FILE:
+            file = db.query(FileMetadata).filter(
+                FileMetadata.id == delete_request.item_id,
+                FileMetadata.owner_id == current_user.id
+            ).first()
+
+            if not file:
+                raise HTTPException(status_code=404, detail="File not found")
+
+            # Delete physical file
+            if os.path.exists(file.filepath):
+                os.remove(file.filepath)
+
+            db.delete(file)
+
+        else:  # FOLDER
+            folder = db.query(Folder).filter(
+                Folder.id == delete_request.item_id,
+                Folder.owner_id == current_user.id
+            ).first()
+
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
+
+            # Get full folder path from parent relationship
+            folder_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
+
+            # Delete physical folder and contents
+            if os.path.exists(folder_path):
+                shutil.rmtree(folder_path)
+
+            # Delete all files in the folder and subfolders
+            def delete_folder_contents(folder_id):
+                # Delete files in current folder
+                db.query(FileMetadata).filter(FileMetadata.folder_id == folder_id).delete()
+
+                # Get subfolders and recursively delete their contents
+                subfolders = db.query(Folder).filter(Folder.parent_id == folder_id).all()
+                for subfolder in subfolders:
+                    delete_folder_contents(subfolder.id)
+                    db.delete(subfolder)
+
+            delete_folder_contents(folder.id)
+            db.delete(folder)
+
+        db.commit()
+        return {"message": f"{delete_request.item_type} deleted successfully"}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error deleting {delete_request.item_type}: {str(e)}")
+
+
+@app.put("/items/move")
+async def move_item(
+        move_request: MoveRequest,
+        current_user: User = Depends(get_current_user),
+        db: SessionLocal = Depends(postgres_util.get_db)
+):
+    try:
+        dest_folder = db.query(Folder).filter(
+            Folder.id == move_request.destination_folder_id,
+            Folder.owner_id == current_user.id
+        ).first()
+
+        if not dest_folder:
+            raise HTTPException(status_code=404, detail="Destination folder not found")
+
+        if move_request.item_type == ItemType.FILE:
+            file = db.query(FileMetadata).filter(
+                FileMetadata.id == move_request.item_id,
+                FileMetadata.owner_id == current_user.id
+            ).first()
+
+            if not file:
+                raise HTTPException(status_code=404, detail="File not found")
+
+            # Get new file path
+            new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, file.filename)
+
+            # Move physical file
+            os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
+            shutil.move(file.filepath, new_file_path)
+
+            # Update database
+            file.filepath = new_file_path
+            file.folder_id = move_request.destination_folder_id
+
+        else:  # FOLDER
+            folder = db.query(Folder).filter(
+                Folder.id == move_request.item_id,
+                Folder.owner_id == current_user.id
+            ).first()
+
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
+
+            # Prevent moving folder into itself or its subdirectories
+            current_parent = dest_folder
+            while current_parent:
+                if current_parent.id == move_request.item_id:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot move a folder into itself or its subdirectories"
+                    )
+                current_parent = db.query(Folder).filter_by(id=current_parent.parent_id).first()
+
+            # Move physical folder
+            old_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
+            new_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, folder.name)
+
+            if os.path.exists(old_path):
+                os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                shutil.move(old_path, new_path)
+
+            # Update database
+            folder.parent_id = move_request.destination_folder_id
+
+        db.commit()
+        return {"message": f"{move_request.item_type} moved successfully"}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error moving {move_request.item_type}: {str(e)}")
+
+
+@app.post("/items/copy")
+async def copy_item(
+        copy_request: CopyRequest,
+        current_user: User = Depends(get_current_user),
+        db: SessionLocal = Depends(postgres_util.get_db)
+):
+    try:
+        dest_folder = db.query(Folder).filter(
+            Folder.id == copy_request.destination_folder_id,
+            Folder.owner_id == current_user.id
+        ).first()
+
+        if not dest_folder:
+            raise HTTPException(status_code=404, detail="Destination folder not found")
+
+        if copy_request.item_type == ItemType.FILE:
+            file = db.query(FileMetadata).filter(
+                FileMetadata.id == copy_request.item_id,
+                FileMetadata.owner_id == current_user.id
+            ).first()
+
+            if not file:
+                raise HTTPException(status_code=404, detail="File not found")
+
+            # Generate unique name for copy
+            base_name, extension = os.path.splitext(file.filename)
+            counter = 1
+            new_filename = f"{base_name}_copy{extension}"
+
+            while db.query(FileMetadata).filter(
+                    FileMetadata.folder_id == copy_request.destination_folder_id,
+                    FileMetadata.filename == new_filename
+            ).first():
+                new_filename = f"{base_name}_copy_{counter}{extension}"
+                counter += 1
+
+            # Copy physical file
+            new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, new_filename)
+            os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
+            shutil.copy2(file.filepath, new_file_path)
+
+            # Create new file metadata
+            new_file = FileMetadata(
+                filename=new_filename,
+                filepath=new_file_path,
+                mimetype=file.mimetype,
+                size=os.path.getsize(new_file_path),
+                is_public=False,  # Reset public status for the copy
+                folder_id=copy_request.destination_folder_id,
+                owner_id=current_user.id,
+                uploaded_at=datetime.now(timezone.utc)
+            )
+            db.add(new_file)
+
+        else:  # FOLDER
+            source_folder = db.query(Folder).filter(
+                Folder.id == copy_request.item_id,
+                Folder.owner_id == current_user.id
+            ).first()
+
+            if not source_folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
+
+            def copy_folder_recursive(src_folder, dest_parent_id):
+                # Create new folder with unique name
+                new_name = f"{src_folder.name}_copy"
+                ctr = 1
+                while db.query(Folder).filter(
+                        Folder.parent_id == dest_parent_id,
+                        Folder.name == new_name
+                ).first():
+                    new_name = f"{src_folder.name}_copy_{ctr}"
+                    ctr += 1
+
+                new_folder = Folder(
+                    name=new_name,
+                    parent_id=dest_parent_id,
+                    owner_id=current_user.id,
+                    created_at=datetime.now(timezone.utc)
+                )
+                db.add(new_folder)
+                db.flush()
+
+                # Create physical folder
+                new_folder_path = os.path.join(STORAGE_PATH, str(current_user.id), new_name)
+                os.makedirs(new_folder_path, exist_ok=True)
+
+                # Copy files
+                files = db.query(FileMetadata).filter(
+                    FileMetadata.folder_id == src_folder.id
+                ).all()
+
+                for file in files:
+                    new_file_path = os.path.join(new_folder_path, file.filename)
+                    shutil.copy2(file.filepath, new_file_path)
+
+                    new_file = FileMetadata(
+                        filename=file.filename,
+                        filepath=new_file_path,
+                        mimetype=file.mimetype,
+                        size=file.size,
+                        is_public=False,  # Reset public status for the copy
+                        folder_id=new_folder.id,
+                        owner_id=current_user.id,
+                        uploaded_at=datetime.now(timezone.utc)
+                    )
+                    db.add(new_file)
+
+                # Recursively copy subfolders
+                subfolders = db.query(Folder).filter(
+                    Folder.parent_id == src_folder.id
+                ).all()
+
+                for subfolder in subfolders:
+                    copy_folder_recursive(subfolder, new_folder.id)
+
+                return new_folder
+
+            copy_folder_recursive(source_folder, copy_request.destination_folder_id)
+
+        db.commit()
+        return {"message": f"{copy_request.item_type} copied successfully"}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error copying {copy_request.item_type}: {str(e)}")
+
+
+@app.put("/items/rename")
+async def rename_item(
+        rename_request: RenameRequest,
+        current_user: User = Depends(get_current_user),
+        db: SessionLocal = Depends(postgres_util.get_db)
+):
+    try:
+        if rename_request.item_type == ItemType.FILE:
+            file = db.query(FileMetadata).filter(
+                FileMetadata.id == rename_request.item_id,
+                FileMetadata.owner_id == current_user.id
+            ).first()
+
+            if not file:
+                raise HTTPException(status_code=404, detail="File not found")
+
+            # Check for name conflicts
+            if db.query(FileMetadata).filter(
+                    FileMetadata.folder_id == file.folder_id,
+                    FileMetadata.filename == rename_request.new_name,
+                    FileMetadata.id != file.id
+            ).first():
+                raise HTTPException(status_code=400, detail="A file with this name already exists")
+
+            # Rename physical file
+            new_filepath = os.path.join(os.path.dirname(file.filepath), rename_request.new_name)
+            os.rename(file.filepath, new_filepath)
+
+            # Update database
+            file.filename = rename_request.new_name
+            file.filepath = new_filepath
+
+        else:  # FOLDER
+            folder = db.query(Folder).filter(
+                Folder.id == rename_request.item_id,
+                Folder.owner_id == current_user.id
+            ).first()
+
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
+
+            # Check for name conflicts
+            if db.query(Folder).filter(
+                    Folder.parent_id == folder.parent_id,
+                    Folder.name == rename_request.new_name,
+                    Folder.id != folder.id
+            ).first():
+                raise HTTPException(status_code=400, detail="A folder with this name already exists")
+
+            # Rename physical folder
+            old_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
+            new_path = os.path.join(STORAGE_PATH, str(current_user.id), rename_request.new_name)
+
+            if os.path.exists(old_path):
+                os.rename(old_path, new_path)
+
+            # Update database
+            folder.name = rename_request.new_name
+
+            # Update all file paths in this folder and subfolders
+            def update_file_paths(folder_id, old_path_part, new_path_part):
+                files = db.query(FileMetadata).filter(
+                    FileMetadata.folder_id == folder_id
+                ).all()
+
+                for file in files:
+                    file.filepath = file.filepath.replace(old_path_part, new_path_part)
+
+                subfolders = db.query(Folder).filter(
+                    Folder.parent_id == folder_id
+                ).all()
+
+                for subfolder in subfolders:
+                    update_file_paths(subfolder.id, old_path_part, new_path_part)
+
+            update_file_paths(folder.id, old_path, new_path)
+
+        db.commit()
+        return {"message": f"{rename_request.item_type} renamed successfully"}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error renaming {rename_request.item_type}: {str(e)}")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ def create_jwt_token(data: dict, expires_delta: timedelta = None):
 
 
 def sync_directory_with_db(user_id: int, db, base_path: Optional[str] = None) -> None:
-    print(f"Base path: {base_path}")
+    # print(f"Base path: {base_path}")
     if base_path is None:
         base_path = os.path.join(STORAGE_PATH, str(user_id))
 
@@ -35,18 +35,18 @@ def sync_directory_with_db(user_id: int, db, base_path: Optional[str] = None) ->
     existing_files = {
         f.filepath: f for f in db.query(FileMetadata).filter(FileMetadata.owner_id == user_id).all()
     }
-    print(f"Existing Files: {existing_files}")
+    # print(f"Existing Files: {existing_files}")
     existing_folders = {
         os.path.join(STORAGE_PATH, str(user_id), f.name): f
         for f in db.query(Folder).filter(Folder.owner_id == user_id).all()
     }
-    print(f"Existing Folders: {existing_folders}")
+    # print(f"Existing Folders: {existing_folders}")
 
     # Walk through the directory
-    ctr: int = 1
+    # ctr: int = 1
     for root, dirs, files in os.walk(base_path):
-        print(f"{ctr} :::::> {root} {dirs} {files}")
-        ctr += 1
+        # print(f"{ctr} :::::> {root} {dirs} {files}")
+        # ctr += 1
         for dir_name in dirs:
             dir_path = os.path.join(root, dir_name)
             if dir_path not in existing_folders:
@@ -98,4 +98,4 @@ def sync_directory_with_db(user_id: int, db, base_path: Optional[str] = None) ->
             db.delete(folder_record)
 
     db.commit()
-    print(f"Sync Completed.........!")
+    # print(f"Sync Completed.........!")

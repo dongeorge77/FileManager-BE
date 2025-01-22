@@ -29,9 +29,6 @@ class FolderInfo(BaseModel):
     folder_id: int  # folder id from database
 
 class DirectoryListing(BaseModel):
-    """
-    Main response model for directory listing endpoint
-    """
     path: str  # Current directory path
     files: List[FileInfo]  # List of files in current directory
     folders: List[FolderInfo]  # List of folders in current directory
@@ -43,3 +40,9 @@ class DirectoryListing(BaseModel):
 class FolderCreate(BaseModel):
     name: str
     parent_id: Optional[int] = None
+
+class ListDirectory(BaseModel):
+    folder_id: Optional[int] = None
+
+class UploadFileModel(BaseModel):
+    folder_id: Optional[int] = None
