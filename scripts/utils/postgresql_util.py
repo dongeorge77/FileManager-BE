@@ -1,24 +1,3 @@
-# from sqlalchemy.orm import sessionmaker, declarative_base
-# from sqlalchemy import create_engine
-#
-# from app_constants.app_configurations import DATABASE_URL
-#
-#
-# engine = create_engine(DATABASE_URL)
-# SessionLocal = sessionmaker(bind=engine)
-# Base = declarative_base()
-#
-# Base.metadata.create_all(bind=engine)
-#
-#
-# # Helper Functions
-# def get_db():
-#     db = SessionLocal()
-#     try:
-#         yield db
-#     finally:
-#         db.close()
-
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import create_engine
 from contextlib import contextmanager

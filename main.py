@@ -17,9 +17,12 @@ from scripts.models.folder_management import (Folder, FolderCreate, DirectoryLis
                                               UploadFileModel)
 from scripts.models.file_management import FileMetadata, FileShare, FileInfo
 from scripts.models.common_models import DeleteRequest, ItemType, MoveRequest, RenameRequest, CopyRequest
+from scripts.models.response_models import CreateUser
 from app_constants.connectors import postgres_util, SessionLocal
-from scripts.utils.common_utils import create_jwt_token, sync_directory_with_db
+from scripts.utils.common_utils import create_jwt_token, sync_directory_with_db, get_process_locking_file, \
+    is_file_accessible
 from scripts.handlers.user_management_handler import get_current_user
+from app_constants.log_module import logger
 
 
 app = FastAPI()
@@ -54,7 +57,7 @@ async def create_user(user: UserCreate, db: SessionLocal = Depends(postgres_util
             is_admin=user.is_admin,
             privilege=user.privilege
         )
-        print(db_user)
+        logger.info(f"Creating user: {db_user.username}")
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
@@ -65,7 +68,20 @@ async def create_user(user: UserCreate, db: SessionLocal = Depends(postgres_util
         print(f"Failed to create user: {e}")
 
 
-@app.post("/upload_file")
+@app.get("/api/user/profile", response_model=dict)
+async def user_profile(current_user: User = Depends(get_current_user)):
+    try:
+        return {
+            "username": current_user.username,
+            "email": current_user.email,
+            "privilege": current_user.privilege
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error retrieving user profile: {str(e)}")
+
+
+@app.post("/files/upload")
 async def upload_file(file: UploadFile = File(...),
                       upload_file_model: str = Form(...),
                       current_user: User = Depends(get_current_user),
@@ -205,7 +221,6 @@ async def list_directory(
         db: SessionLocal = Depends(postgres_util.get_db)
 ):
     folder_id = folder_details.folder_id
-    background_tasks.add_task(sync_directory_with_db, current_user.id, db)
 
     # Rest of your existing list_directory code remains the same
     current_folder = None
@@ -216,6 +231,8 @@ async def list_directory(
         ).first()
         if not current_folder:
             raise HTTPException(status_code=404, detail="Folder not found")
+
+    background_tasks.add_task(sync_directory_with_db, current_user.id, db, folder_id)
 
     folders_query = db.query(Folder).filter(
         Folder.owner_id == current_user.id,
@@ -397,7 +414,7 @@ async def move_item(
         raise HTTPException(status_code=500, detail=f"Error moving {move_request.item_type}: {str(e)}")
 
 
-@app.post("/items/copy")
+@app.put("/items/copy")
 async def copy_item(
         copy_request: CopyRequest,
         current_user: User = Depends(get_current_user),
@@ -421,17 +438,26 @@ async def copy_item(
             if not file:
                 raise HTTPException(status_code=404, detail="File not found")
 
-            # Generate unique name for copy
-            base_name, extension = os.path.splitext(file.filename)
-            counter = 1
-            new_filename = f"{base_name}_copy{extension}"
+            # Check if a file with the same name exists in the destination folder
+            existing_file = db.query(FileMetadata).filter(
+                FileMetadata.folder_id == copy_request.destination_folder_id,
+                FileMetadata.filename == file.filename
+            ).first()
 
-            while db.query(FileMetadata).filter(
-                    FileMetadata.folder_id == copy_request.destination_folder_id,
-                    FileMetadata.filename == new_filename
-            ).first():
-                new_filename = f"{base_name}_copy_{counter}{extension}"
-                counter += 1
+            if existing_file:
+                # Generate a unique name for the copy
+                base_name, extension = os.path.splitext(file.filename)
+                counter = 1
+                new_filename = f"{base_name}_copy{extension}"
+
+                while db.query(FileMetadata).filter(
+                        FileMetadata.folder_id == copy_request.destination_folder_id,
+                        FileMetadata.filename == new_filename
+                ).first():
+                    new_filename = f"{base_name}_copy_{counter}{extension}"
+                    counter += 1
+            else:
+                new_filename = file.filename
 
             # Copy physical file
             new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, new_filename)
@@ -461,59 +487,83 @@ async def copy_item(
                 raise HTTPException(status_code=404, detail="Folder not found")
 
             def copy_folder_recursive(src_folder, dest_parent_id):
-                # Create new folder with unique name
-                new_name = f"{src_folder.name}_copy"
-                ctr = 1
-                while db.query(Folder).filter(
+                try:
+                    # Check if a folder with the same name exists in the destination
+                    existing_folder = db.query(Folder).filter(
                         Folder.parent_id == dest_parent_id,
-                        Folder.name == new_name
-                ).first():
-                    new_name = f"{src_folder.name}_copy_{ctr}"
-                    ctr += 1
+                        Folder.name == src_folder.name
+                    ).first()
 
-                new_folder = Folder(
-                    name=new_name,
-                    parent_id=dest_parent_id,
-                    owner_id=current_user.id,
-                    created_at=datetime.now(timezone.utc)
-                )
-                db.add(new_folder)
-                db.flush()
+                    if existing_folder:
+                        # Generate a unique name for the copy
+                        new_name = f"{src_folder.name}_copy"
+                        ctr = 1
+                        while db.query(Folder).filter(
+                                Folder.parent_id == dest_parent_id,
+                                Folder.name == new_name
+                        ).first():
+                            new_name = f"{src_folder.name}_copy_{ctr}"
+                            ctr += 1
+                    else:
+                        new_name = src_folder.name
 
-                # Create physical folder
-                new_folder_path = os.path.join(STORAGE_PATH, str(current_user.id), new_name)
-                os.makedirs(new_folder_path, exist_ok=True)
-
-                # Copy files
-                files = db.query(FileMetadata).filter(
-                    FileMetadata.folder_id == src_folder.id
-                ).all()
-
-                for file in files:
-                    new_file_path = os.path.join(new_folder_path, file.filename)
-                    shutil.copy2(file.filepath, new_file_path)
-
-                    new_file = FileMetadata(
-                        filename=file.filename,
-                        filepath=new_file_path,
-                        mimetype=file.mimetype,
-                        size=file.size,
-                        is_public=False,  # Reset public status for the copy
-                        folder_id=new_folder.id,
+                    # Create new folder in the database
+                    new_folder = Folder(
+                        name=new_name,
+                        parent_id=dest_parent_id,
                         owner_id=current_user.id,
-                        uploaded_at=datetime.now(timezone.utc)
+                        created_at=datetime.now(timezone.utc)
                     )
-                    db.add(new_file)
+                    db.add(new_folder)
+                    db.flush()
 
-                # Recursively copy subfolders
-                subfolders = db.query(Folder).filter(
-                    Folder.parent_id == src_folder.id
-                ).all()
+                    # Create physical folder
+                    new_folder_path = os.path.join(STORAGE_PATH, str(current_user.id), new_name)
+                    os.makedirs(new_folder_path, exist_ok=True)
 
-                for subfolder in subfolders:
-                    copy_folder_recursive(subfolder, new_folder.id)
+                    # Copy files
+                    files = db.query(FileMetadata).filter(
+                        FileMetadata.folder_id == src_folder.id
+                    ).all()
 
-                return new_folder
+                    for file in files:
+                        new_file_path = os.path.join(new_folder_path, file.filename)
+                        if is_file_accessible(file.filepath):
+                            shutil.copy2(file.filepath, new_file_path)
+                        else:
+                            print(f"Skipping file {file.filepath} as it is locked by another process.")
+                            locking_proc = get_process_locking_file(file.filepath)
+                            if locking_proc:
+                                print(
+                                    f"File {file.filepath} is locked by process {locking_proc.info['name']} (PID: {locking_proc.info['pid']})")
+                                return None
+                            else:
+                                shutil.copy2(file.filepath, new_file_path)
+
+                        new_file = FileMetadata(
+                            filename=file.filename,
+                            filepath=new_file_path,
+                            mimetype=file.mimetype,
+                            size=file.size,
+                            is_public=False,  # Reset public status for the copy
+                            folder_id=new_folder.id,
+                            owner_id=current_user.id,
+                            uploaded_at=datetime.now(timezone.utc)
+                        )
+                        db.add(new_file)
+
+                    # Recursively copy subfolders
+                    subfolders = db.query(Folder).filter(
+                        Folder.parent_id == src_folder.id
+                    ).all()
+
+                    for subfolder in subfolders:
+                        copy_folder_recursive(subfolder, new_folder.id)
+
+                    return new_folder
+                except Exception as e:
+                    print(f"Failed to copy the folder: {e}")
+                    traceback.print_exc()
 
             copy_folder_recursive(source_folder, copy_request.destination_folder_id)
 
@@ -608,6 +658,59 @@ async def rename_item(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error renaming {rename_request.item_type}: {str(e)}")
+
+@app.post("/folders/create", response_model=FolderInfo)
+async def create_folder(
+    folder: FolderCreate,
+    current_user: User = Depends(get_current_user),
+    db: SessionLocal = Depends(postgres_util.get_db)
+):
+    try:
+        # Check if parent folder exists (if specified)
+        if folder.parent_id:
+            parent_folder = db.query(Folder).filter(
+                Folder.id == folder.parent_id,
+                Folder.owner_id == current_user.id
+            ).first()
+            if not parent_folder:
+                raise HTTPException(status_code=404, detail="Parent folder not found")
+
+        # Check for duplicate folder name in the same parent folder
+        existing_folder = db.query(Folder).filter(
+            Folder.name == folder.name,
+            Folder.parent_id == folder.parent_id,
+            Folder.owner_id == current_user.id
+        ).first()
+        if existing_folder:
+            raise HTTPException(status_code=400, detail="A folder with this name already exists")
+
+        # Create the folder in database
+        new_folder = Folder(
+            name=folder.name,
+            parent_id=folder.parent_id,
+            owner_id=current_user.id,
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(new_folder)
+        db.flush()  # Get the new folder's ID
+
+        # Create physical folder on disk
+        folder_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
+        os.makedirs(folder_path, exist_ok=True)
+
+        db.commit()
+
+        return FolderInfo(
+            name=new_folder.name,
+            path=folder_path,
+            modified_at=new_folder.created_at,
+            owner_id=new_folder.owner_id,
+            folder_id=new_folder.id
+        )
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error creating folder: {str(e)}")
 
 
 if __name__ == "__main__":
