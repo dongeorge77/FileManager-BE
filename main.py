@@ -8,7 +8,6 @@ import os
 from datetime import datetime, timedelta, timezone
 import jwt
 import shutil
-from typing import Optional
 import mimetypes
 
 from app_constants.app_configurations import STORAGE_PATH, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES, pwd_context
@@ -20,7 +19,7 @@ from scripts.models.common_models import DeleteRequest, ItemType, MoveRequest, R
 from scripts.models.response_models import CreateUser
 from app_constants.connectors import postgres_util, SessionLocal
 from scripts.utils.common_utils import create_jwt_token, sync_directory_with_db, get_process_locking_file, \
-    is_file_accessible
+    is_file_accessible, get_folder_path
 from scripts.handlers.user_management_handler import get_current_user
 from app_constants.log_module import logger
 
@@ -85,24 +84,28 @@ async def user_profile(current_user: User = Depends(get_current_user)):
 async def upload_file(file: UploadFile = File(...),
                       upload_file_model: str = Form(...),
                       current_user: User = Depends(get_current_user),
-                      db = Depends(postgres_util.get_db)):
+                      db=Depends(postgres_util.get_db)):
     try:
         item = UploadFileModel(**json.loads(upload_file_model)) if upload_file_model else None
-        folder_id = item.folder_id
+        folder_id = item.folder_id if item else None
 
-        # Retrieve folder details from the database
-        folder = db.query(Folder).filter_by(id=folder_id, owner_id=current_user.id).first()
-        if not folder:
-            raise HTTPException(status_code=404, detail="Folder not found.")
-
-        # Construct the folder path
+        # Handle root folder vs specific folder
+        # folder = None
         folder_path_parts = []
-        current_folder = folder
-        while current_folder:
-            folder_path_parts.append(current_folder.name)
-            current_folder = db.query(Folder).filter_by(id=current_folder.parent_id).first()
+        if folder_id is not None:
+            # Retrieve folder details from the database
+            folder = db.query(Folder).filter_by(id=folder_id, owner_id=current_user.id).first()
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found.")
 
-        folder_path_parts.reverse()
+            # Construct the folder path for non-root folder
+            current_folder = folder
+            while current_folder:
+                folder_path_parts.append(current_folder.name)
+                current_folder = db.query(Folder).filter_by(id=current_folder.parent_id).first()
+            folder_path_parts.reverse()
+
+        # Construct the final path (root or nested folder)
         folder_path = os.path.join(STORAGE_PATH, str(current_user.id), *folder_path_parts)
         os.makedirs(folder_path, exist_ok=True)
 
@@ -147,19 +150,17 @@ async def upload_file(file: UploadFile = File(...),
         # Create file metadata
         mime_type = mimetypes.guess_type(file.filename)[0]
         file_size = os.path.getsize(file_path)
-
         db_file = FileMetadata(
             filename=file.filename,
             filepath=file_path,
             mimetype=mime_type,
             size=file_size,
-            folder_id=folder_id,
+            folder_id=folder_id,  # Will be None for root folder
             owner_id=current_user.id,
         )
         db.add(db_file)
         db.commit()
         db.refresh(db_file)
-
         return db_file
 
     except json.JSONDecodeError as e:
@@ -213,71 +214,65 @@ async def get_shared_file(share_token: str, db: SessionLocal = Depends(postgres_
         raise HTTPException(status_code=400, detail="Invalid share token")
 
 
-@app.post(path="/list_directory", response_model=DirectoryListing)
+@app.post("/list_directory", response_model=DirectoryListing)
 async def list_directory(
         background_tasks: BackgroundTasks,
         folder_details: ListDirectory,
         current_user: User = Depends(get_current_user),
-        db: SessionLocal = Depends(postgres_util.get_db)
+        db = Depends(postgres_util.get_db)
 ):
+    # Validate folder exists and user has access
     folder_id = folder_details.folder_id
-
-    # Rest of your existing list_directory code remains the same
-    current_folder = None
     if folder_id:
-        current_folder = db.query(Folder).filter(
+        folder = db.query(Folder).filter(
             Folder.id == folder_id,
             Folder.owner_id == current_user.id
         ).first()
-        if not current_folder:
-            raise HTTPException(status_code=404, detail="Folder not found")
+        if not folder:
+            raise HTTPException(404, "Folder not found")
 
+    # Trigger sync in background
     background_tasks.add_task(sync_directory_with_db, current_user.id, db, folder_id)
 
-    folders_query = db.query(Folder).filter(
+    # Query immediate children only
+    folders = db.query(Folder).filter(
         Folder.owner_id == current_user.id,
         Folder.parent_id == folder_id
-    )
+    ).all()
 
-    files_query = db.query(FileMetadata).filter(
+    files = db.query(FileMetadata).filter(
         FileMetadata.owner_id == current_user.id,
         FileMetadata.folder_id == folder_id
-    )
+    ).all()
 
-    folder_list = []
-    for folder in folders_query.all():
-        folder_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
-        folder_list.append(FolderInfo(
-            name=folder.name,
-            path=folder_path,
-            modified_at=folder.created_at,
-            owner_id=folder.owner_id,
-            folder_id=folder.id
-        ))
-
-    file_list = []
-    total_size = 0
-    for file in files_query.all():
-        file_path = os.path.join(STORAGE_PATH, str(current_user.id), file.filename)
-        file_list.append(FileInfo(
-            name=file.filename,
-            path=file_path,
-            size=file.size,
-            modified_at=file.uploaded_at,
-            mime_type=file.mimetype,
-            is_public=file.is_public,
-            owner_id=file.owner_id,
-            id=file.id
-        ))
-        total_size += file.size
-
+    # Build response
     return DirectoryListing(
-        path=os.path.join(STORAGE_PATH, str(current_user.id)),
-        files=file_list,
-        folders=folder_list,
-        parent_folder_id=current_folder.parent_id if current_folder else None,
-        total_files=len(file_list),
-        total_size=total_size
+        path=get_folder_path(db, folder_id, current_user.id) if folder_id else os.path.join(STORAGE_PATH,
+                                                                                            str(current_user.id)),
+        files=[
+            FileInfo(
+                name=f.filename,
+                path=f.filepath,
+                size=f.size,
+                modified_at=f.uploaded_at,
+                mime_type=f.mimetype,
+                is_public=f.is_public,
+                owner_id=f.owner_id,
+                id=f.id
+            ) for f in files
+        ],
+        folders=[
+            FolderInfo(
+                name=f.name,
+                path=get_folder_path(db, f.id, current_user.id),  # Fixed here
+                modified_at=f.created_at,
+                owner_id=f.owner_id,
+                folder_id=f.id
+            ) for f in folders
+        ],
+        parent_folder_id=folder.parent_id if folder_id else None,
+        total_files=len(files),
+        total_size=sum(f.size for f in files)
     )
 
 
@@ -343,18 +338,20 @@ async def delete_item(
 
 @app.put("/items/move")
 async def move_item(
-        move_request: MoveRequest,
-        current_user: User = Depends(get_current_user),
-        db: SessionLocal = Depends(postgres_util.get_db)
+    move_request: MoveRequest,
+    current_user: User = Depends(get_current_user),
+    db: SessionLocal = Depends(postgres_util.get_db)
 ):
     try:
-        dest_folder = db.query(Folder).filter(
-            Folder.id == move_request.destination_folder_id,
-            Folder.owner_id == current_user.id
-        ).first()
-
-        if not dest_folder:
-            raise HTTPException(status_code=404, detail="Destination folder not found")
+        # Determine destination folder
+        dest_folder = None
+        if move_request.destination_folder_id is not None:
+            dest_folder = db.query(Folder).filter(
+                Folder.id == move_request.destination_folder_id,
+                Folder.owner_id == current_user.id
+            ).first()
+            if not dest_folder:
+                raise HTTPException(status_code=404, detail="Destination folder not found")
 
         if move_request.item_type == ItemType.FILE:
             file = db.query(FileMetadata).filter(
@@ -366,7 +363,10 @@ async def move_item(
                 raise HTTPException(status_code=404, detail="File not found")
 
             # Get new file path
-            new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, file.filename)
+            if dest_folder:
+                new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, file.filename)
+            else:
+                new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), file.filename)
 
             # Move physical file
             os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
@@ -374,7 +374,7 @@ async def move_item(
 
             # Update database
             file.filepath = new_file_path
-            file.folder_id = move_request.destination_folder_id
+            file.folder_id = move_request.destination_folder_id  # None for root
 
         else:  # FOLDER
             folder = db.query(Folder).filter(
@@ -386,25 +386,29 @@ async def move_item(
                 raise HTTPException(status_code=404, detail="Folder not found")
 
             # Prevent moving folder into itself or its subdirectories
-            current_parent = dest_folder
-            while current_parent:
-                if current_parent.id == move_request.item_id:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot move a folder into itself or its subdirectories"
-                    )
-                current_parent = db.query(Folder).filter_by(id=current_parent.parent_id).first()
+            if move_request.destination_folder_id is not None:
+                current_parent = dest_folder
+                while current_parent:
+                    if current_parent.id == move_request.item_id:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Cannot move a folder into itself or its subdirectories"
+                        )
+                    current_parent = db.query(Folder).filter_by(id=current_parent.parent_id).first()
 
             # Move physical folder
             old_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
-            new_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, folder.name)
+            if dest_folder:
+                new_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, folder.name)
+            else:
+                new_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
 
             if os.path.exists(old_path):
                 os.makedirs(os.path.dirname(new_path), exist_ok=True)
                 shutil.move(old_path, new_path)
 
             # Update database
-            folder.parent_id = move_request.destination_folder_id
+            folder.parent_id = move_request.destination_folder_id  # None for root
 
         db.commit()
         return {"message": f"{move_request.item_type} moved successfully"}
@@ -416,18 +420,20 @@ async def move_item(
 
 @app.put("/items/copy")
 async def copy_item(
-        copy_request: CopyRequest,
-        current_user: User = Depends(get_current_user),
-        db: SessionLocal = Depends(postgres_util.get_db)
+    copy_request: CopyRequest,
+    current_user: User = Depends(get_current_user),
+    db: SessionLocal = Depends(postgres_util.get_db)
 ):
     try:
-        dest_folder = db.query(Folder).filter(
-            Folder.id == copy_request.destination_folder_id,
-            Folder.owner_id == current_user.id
-        ).first()
-
-        if not dest_folder:
-            raise HTTPException(status_code=404, detail="Destination folder not found")
+        # Determine destination folder
+        dest_folder = None
+        if copy_request.destination_folder_id is not None:
+            dest_folder = db.query(Folder).filter(
+                Folder.id == copy_request.destination_folder_id,
+                Folder.owner_id == current_user.id
+            ).first()
+            if not dest_folder:
+                raise HTTPException(status_code=404, detail="Destination folder not found")
 
         if copy_request.item_type == ItemType.FILE:
             file = db.query(FileMetadata).filter(
@@ -451,8 +457,8 @@ async def copy_item(
                 new_filename = f"{base_name}_copy{extension}"
 
                 while db.query(FileMetadata).filter(
-                        FileMetadata.folder_id == copy_request.destination_folder_id,
-                        FileMetadata.filename == new_filename
+                    FileMetadata.folder_id == copy_request.destination_folder_id,
+                    FileMetadata.filename == new_filename
                 ).first():
                     new_filename = f"{base_name}_copy_{counter}{extension}"
                     counter += 1
@@ -460,7 +466,11 @@ async def copy_item(
                 new_filename = file.filename
 
             # Copy physical file
-            new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, new_filename)
+            if dest_folder:
+                new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, new_filename)
+            else:
+                new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), new_filename)
+
             os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
             shutil.copy2(file.filepath, new_file_path)
 
@@ -471,7 +481,7 @@ async def copy_item(
                 mimetype=file.mimetype,
                 size=os.path.getsize(new_file_path),
                 is_public=False,  # Reset public status for the copy
-                folder_id=copy_request.destination_folder_id,
+                folder_id=copy_request.destination_folder_id,  # None for root
                 owner_id=current_user.id,
                 uploaded_at=datetime.now(timezone.utc)
             )
@@ -499,8 +509,8 @@ async def copy_item(
                         new_name = f"{src_folder.name}_copy"
                         ctr = 1
                         while db.query(Folder).filter(
-                                Folder.parent_id == dest_parent_id,
-                                Folder.name == new_name
+                            Folder.parent_id == dest_parent_id,
+                            Folder.name == new_name
                         ).first():
                             new_name = f"{src_folder.name}_copy_{ctr}"
                             ctr += 1
@@ -518,7 +528,12 @@ async def copy_item(
                     db.flush()
 
                     # Create physical folder
-                    new_folder_path = os.path.join(STORAGE_PATH, str(current_user.id), new_name)
+                    if dest_parent_id is not None:
+                        dest_folder = db.query(Folder).filter(Folder.id == dest_parent_id).first()
+                        new_folder_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, new_name)
+                    else:
+                        new_folder_path = os.path.join(STORAGE_PATH, str(current_user.id), new_name)
+
                     os.makedirs(new_folder_path, exist_ok=True)
 
                     # Copy files
@@ -528,17 +543,7 @@ async def copy_item(
 
                     for file in files:
                         new_file_path = os.path.join(new_folder_path, file.filename)
-                        if is_file_accessible(file.filepath):
-                            shutil.copy2(file.filepath, new_file_path)
-                        else:
-                            print(f"Skipping file {file.filepath} as it is locked by another process.")
-                            locking_proc = get_process_locking_file(file.filepath)
-                            if locking_proc:
-                                print(
-                                    f"File {file.filepath} is locked by process {locking_proc.info['name']} (PID: {locking_proc.info['pid']})")
-                                return None
-                            else:
-                                shutil.copy2(file.filepath, new_file_path)
+                        shutil.copy2(file.filepath, new_file_path)
 
                         new_file = FileMetadata(
                             filename=file.filename,
@@ -711,6 +716,39 @@ async def create_folder(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error creating folder: {str(e)}")
+
+@app.get("/files/preview/{file_id}")
+async def preview_file(
+        file_id: int,
+        current_user: User = Depends(get_current_user),
+        db: SessionLocal = Depends(postgres_util.get_db)
+):
+    try:
+        # Retrieve file metadata from the database
+        file_metadata = db.query(FileMetadata).filter(
+            FileMetadata.id == file_id,
+            FileMetadata.owner_id == current_user.id
+        ).first()
+
+        if not file_metadata:
+            raise HTTPException(status_code=404, detail="File not found or access denied.")
+
+        # Ensure the file exists on disk
+        if not os.path.exists(file_metadata.filepath):
+            raise HTTPException(status_code=404, detail="File does not exist on the server.")
+
+        # Return the file content as a response
+        return FileResponse(
+            file_metadata.filepath,
+            media_type=file_metadata.mimetype,
+            headers={
+                "Content-Disposition": f"inline; filename={file_metadata.filename}"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error previewing file {file_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="An error occurred while previewing the file.")
 
 
 if __name__ == "__main__":
