@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import shutil
 import mimetypes
-
+from fastapi.responses import FileResponse
 from app_constants.app_configurations import STORAGE_PATH, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES, pwd_context
 from scripts.models.user_management import User, Token, UserCreate
 from scripts.models.folder_management import (Folder, FolderCreate, DirectoryListing, FolderInfo, ListDirectory,
@@ -752,4 +752,4 @@ async def preview_file(
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=80, reload=True)
