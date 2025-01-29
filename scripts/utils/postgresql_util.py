@@ -4,12 +4,13 @@ from contextlib import contextmanager
 from typing import Generator
 
 from app_constants.app_configurations import DATABASE_URL
+from app_constants.log_module import logger
 
 
 class PostgresUtil:
     def __init__(self):
         self.database_url = DATABASE_URL
-        print(f"Creating db connection: {self.database_url}")
+        logger.info(f"Creating db connection: {self.database_url}")
         self.engine = create_engine(self.database_url)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
         self.Base = declarative_base()

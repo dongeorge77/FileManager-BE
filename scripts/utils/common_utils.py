@@ -11,8 +11,7 @@ import threading
 from app_constants.app_configurations import STORAGE_PATH, SECRET_KEY
 from scripts.models.file_management import FileMetadata
 from scripts.models.folder_management import Folder
-from scripts.utils.postgresql_util import PostgresUtil
-
+from app_constants.log_module import logger
 sync_lock = threading.Lock()
 
 
@@ -77,11 +76,11 @@ def get_folder_path(db, folder_id: int, user_id: int) -> str | None:
 
 def sync_directory_with_db(user_id: int, db, folder_id: Optional[int] = None) -> None:
     if not sync_lock.acquire(blocking=False):
-        print("Sync task is already running. Skipping this request.")
+        logger.info("Sync task is already running. Skipping this request.")
         return
 
     try:
-        print(f"Starting directory sync for user {user_id}")
+        logger.info(f"Starting directory sync for user {user_id}")
 
         # Determine base path
         if folder_id:
@@ -189,10 +188,10 @@ def sync_directory_with_db(user_id: int, db, folder_id: Optional[int] = None) ->
                 db.delete(folder)
 
         db.commit()
-        print(f"Directory sync completed for {base_path}")
+        logger.info(f"Directory sync completed for {base_path}")
     except Exception as e:
         db.rollback()
-        print(f"Sync failed: {str(e)}")
+        logger.info(f"Sync failed: {str(e)}")
         traceback.print_exc()
     finally:
         sync_lock.release()

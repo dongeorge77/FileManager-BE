@@ -38,3 +38,6 @@ class FileInfo(BaseModel):
 class FileShare(BaseModel):
     file_id: int
     expires_in_hours: Optional[int] = 24
+
+class UploadFileModel(BaseModel):
+    folder_id: Optional[int] = None
