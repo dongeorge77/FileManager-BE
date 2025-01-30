@@ -49,7 +49,7 @@ async def upload_file(file: UploadFile = File(...),
             folder_path_parts.reverse()
 
         # Construct the final path (root or nested folder)
-        folder_path = os.path.join(STORAGE_PATH, str(current_user.id), *folder_path_parts)
+        folder_path = os.path.join(Storage.PATH, str(current_user.id), *folder_path_parts)
         os.makedirs(folder_path, exist_ok=True)
 
         # Check for duplicate file name in the folder
