@@ -120,7 +120,7 @@ async def move_item(
             # Move physical file
             os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
             logger.info(f"Moving file from {file.filepath} to {new_file_path}")
-            shutil.move(file.filepath, new_file_path)
+            shutil.move(str(file.filepath), str(new_file_path))
 
             # Update database
             file.filepath = new_file_path
@@ -158,7 +158,7 @@ async def move_item(
             if os.path.exists(old_path):
                 os.makedirs(os.path.dirname(new_path), exist_ok=True)
                 logger.info(f"Moving folder from {old_path} to {new_path}")
-                shutil.move(old_path, new_path)
+                shutil.move(str(old_path), str(new_path))
 
             # Update database
             folder.parent_id = move_request.destination_folder_id  # None for root
@@ -231,7 +231,7 @@ async def copy_item(
 
             os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
             logger.info(f"Copying file from {file.filepath} to {new_file_path}")
-            shutil.copy2(file.filepath, new_file_path)
+            shutil.copy2(str(file.filepath), str(new_file_path))
 
             # Create new file metadata
             new_file = FileMetadata(
@@ -288,8 +288,8 @@ async def copy_item(
 
                     # Create physical folder
                     if dest_parent_id is not None:
-                        dest_folder = db.query(Folder).filter(Folder.id == dest_parent_id).first()
-                        new_folder_path = os.path.join(Storage.PATH, str(current_user.id), dest_folder.name, new_name)
+                        dest_folder_obj = db.query(Folder).filter(Folder.id == dest_parent_id).first()
+                        new_folder_path = os.path.join(Storage.PATH, str(current_user.id), dest_folder_obj.name, new_name)
                     else:
                         new_folder_path = os.path.join(Storage.PATH, str(current_user.id), new_name)
 
@@ -300,22 +300,22 @@ async def copy_item(
                         FileMetadata.folder_id == src_folder.id
                     ).all()
 
-                    for file in files:
-                        new_file_path = os.path.join(new_folder_path, file.filename)
-                        logger.info(f"Copying file from {file.filepath} to {new_file_path}")
-                        shutil.copy2(file.filepath, new_file_path)
+                    for each_file in files:
+                        new_file_path_ele = os.path.join(str(new_folder_path), each_file.filename)
+                        logger.info(f"Copying file from {each_file.filepath} to {new_file_path_ele}")
+                        shutil.copy2(each_file.filepath, new_file_path_ele)
 
-                        new_file = FileMetadata(
-                            filename=file.filename,
-                            filepath=new_file_path,
-                            mimetype=file.mimetype,
-                            size=file.size,
+                        new_file_obj = FileMetadata(
+                            filename=each_file.filename,
+                            filepath=new_file_path_ele,
+                            mimetype=each_file.mimetype,
+                            size=each_file.size,
                             is_public=False,  # Reset public status for the copy
                             folder_id=new_folder.id,
                             owner_id=current_user.id,
                             uploaded_at=datetime.now(timezone.utc)
                         )
-                        db.add(new_file)
+                        db.add(new_file_obj)
 
                     # Recursively copy subfolders
                     subfolders = db.query(Folder).filter(
@@ -326,8 +326,8 @@ async def copy_item(
                         copy_folder_recursive(subfolder, new_folder.id)
 
                     return new_folder
-                except Exception as e:
-                    logger.debug(f"Failed to copy the folder: {e}")
+                except Exception as err:
+                    logger.debug(f"Failed to copy the folder: {err}")
                     traceback.print_exc()
 
             copy_folder_recursive(source_folder, copy_request.destination_folder_id)
