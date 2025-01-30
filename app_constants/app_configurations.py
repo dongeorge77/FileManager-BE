@@ -17,7 +17,7 @@ CONSTANTS_SECTION = "CONSTANTS"
 # Constants
 class Constants:
     SECRET_KEY = "f53b328f-8c52-4778-a715-6e5dc69f69d0"
-    ACCESS_TOKEN_EXPIRE_MINUTES = config.get(CONSTANTS_SECTION, 'ACCESS_TOKEN_EXPIRE_MINUTES')
+    ACCESS_TOKEN_EXPIRE_MINUTES = int(config.get(CONSTANTS_SECTION, 'ACCESS_TOKEN_EXPIRE_MINUTES'))
     pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
     oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 

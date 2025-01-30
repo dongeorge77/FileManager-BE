@@ -22,6 +22,7 @@ class FilesAPI:
 class FolderAPI:
     list_directory: str = "/list_directory"
     create: str = "/create"
+    clean_directory: str = "/clean_directory"
 
 class ItemsAPI:
     delete: str = "/delete"

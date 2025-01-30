@@ -46,3 +46,6 @@ class ListDirectory(BaseModel):
 
 class UploadFileModel(BaseModel):
     folder_id: Optional[int] = None
+
+class CleanDirectory(BaseModel):
+    folder_id: Optional[int] = None
