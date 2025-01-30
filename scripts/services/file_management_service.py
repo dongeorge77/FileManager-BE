@@ -12,7 +12,7 @@ from scripts.models.user_management import User
 from scripts.handlers.user_management_handler import get_current_user
 from app_constants.log_module import logger
 from app_constants.connectors import postgres_util, SessionLocal
-from scripts.models.file_management import UploadFileModel, FileShare, FileInfo
+from scripts.models.file_management import UploadFileModel, FileShare
 from scripts.models.folder_management import Folder
 from app_constants.app_configurations import Storage
 from scripts.models.file_management import FileMetadata
@@ -76,7 +76,7 @@ async def upload_file(file: UploadFile = File(...),
                 counter += 1
 
         # Save the file in the appropriate folder
-        file_path = os.path.join(folder_path, file.filename)
+        file_path = os.path.join(str(folder_path), str(file.filename))
         try:
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)

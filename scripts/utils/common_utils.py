@@ -1,8 +1,7 @@
 import os
 import traceback
 from datetime import datetime, timedelta, timezone
-from itertools import count
-from typing import Optional
+from typing import Optional, Dict
 import jwt
 import mimetypes
 import psutil
@@ -45,7 +44,7 @@ def get_folder_path(db, folder_id: int, user_id: int) -> str | None:
             Folder.owner_id == user_id
         ).first() if current_folder.parent_id else None
 
-    return normalize_path(os.path.join(Storage.PATH, str(user_id), *path_parts))
+    return normalize_path(str(os.path.join(Storage.PATH, str(user_id), *path_parts)))
 
 
 def sync_directory_with_db(user_id: int, db, folder_id: Optional[int] = None) -> None:
@@ -80,7 +79,7 @@ def sync_directory_with_db(user_id: int, db, folder_id: Optional[int] = None) ->
                 path_parts.insert(0, current.name)
                 current = folder_map.get(current.parent_id) if current.parent_id else None
             full_path = os.path.join(Storage.PATH, str(user_id), *path_parts)
-            folder_paths[folder.id] = normalize_path(full_path)
+            folder_paths[folder.id] = normalize_path(str(full_path))
 
         # Filter folders/files within the current sync scope
         scope_folders = {

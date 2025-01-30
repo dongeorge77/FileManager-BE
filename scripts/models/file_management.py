@@ -1,8 +1,8 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Optional
 
 from app_constants.connectors import Base
 

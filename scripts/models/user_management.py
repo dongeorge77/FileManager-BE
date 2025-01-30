@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Boolean
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import relationship
 from pydantic import BaseModel
 
 from app_constants.connectors import Base
