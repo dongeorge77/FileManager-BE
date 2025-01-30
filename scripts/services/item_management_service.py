@@ -10,7 +10,7 @@ from scripts.handlers.user_management_handler import get_current_user
 from app_constants.log_module import logger
 from app_constants.connectors import postgres_util, SessionLocal
 from scripts.models.folder_management import Folder
-from app_constants.app_configurations import STORAGE_PATH
+from app_constants.app_configurations import Storage
 from scripts.models.file_management import FileMetadata
 from scripts.models.common_models import DeleteRequest, ItemType, MoveRequest, RenameRequest, CopyRequest
 
@@ -51,7 +51,7 @@ async def delete_item(
                 raise HTTPException(status_code=404, detail="Folder not found")
 
             # Get full folder path from parent relationship
-            folder_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
+            folder_path = os.path.join(Storage.PATH, str(current_user.id), folder.name)
 
             # Delete physical folder and contents
             if os.path.exists(folder_path):
@@ -113,9 +113,9 @@ async def move_item(
 
             # Get new file path
             if dest_folder:
-                new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, file.filename)
+                new_file_path = os.path.join(Storage.PATH, str(current_user.id), dest_folder.name, file.filename)
             else:
-                new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), file.filename)
+                new_file_path = os.path.join(Storage.PATH, str(current_user.id), file.filename)
 
             # Move physical file
             os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
@@ -149,11 +149,11 @@ async def move_item(
                     current_parent = db.query(Folder).filter_by(id=current_parent.parent_id).first()
 
             # Move physical folder
-            old_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
+            old_path = os.path.join(Storage.PATH, str(current_user.id), folder.name)
             if dest_folder:
-                new_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, folder.name)
+                new_path = os.path.join(Storage.PATH, str(current_user.id), dest_folder.name, folder.name)
             else:
-                new_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
+                new_path = os.path.join(Storage.PATH, str(current_user.id), folder.name)
 
             if os.path.exists(old_path):
                 os.makedirs(os.path.dirname(new_path), exist_ok=True)
@@ -225,9 +225,9 @@ async def copy_item(
 
             # Copy physical file
             if dest_folder:
-                new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, new_filename)
+                new_file_path = os.path.join(Storage.PATH, str(current_user.id), dest_folder.name, new_filename)
             else:
-                new_file_path = os.path.join(STORAGE_PATH, str(current_user.id), new_filename)
+                new_file_path = os.path.join(Storage.PATH, str(current_user.id), new_filename)
 
             os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
             logger.info(f"Copying file from {file.filepath} to {new_file_path}")
@@ -289,9 +289,9 @@ async def copy_item(
                     # Create physical folder
                     if dest_parent_id is not None:
                         dest_folder = db.query(Folder).filter(Folder.id == dest_parent_id).first()
-                        new_folder_path = os.path.join(STORAGE_PATH, str(current_user.id), dest_folder.name, new_name)
+                        new_folder_path = os.path.join(Storage.PATH, str(current_user.id), dest_folder.name, new_name)
                     else:
-                        new_folder_path = os.path.join(STORAGE_PATH, str(current_user.id), new_name)
+                        new_folder_path = os.path.join(Storage.PATH, str(current_user.id), new_name)
 
                     os.makedirs(new_folder_path, exist_ok=True)
 
@@ -397,8 +397,8 @@ async def rename_item(
                 raise HTTPException(status_code=400, detail="A folder with this name already exists")
 
             # Rename physical folder
-            old_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
-            new_path = os.path.join(STORAGE_PATH, str(current_user.id), rename_request.new_name)
+            old_path = os.path.join(Storage.PATH, str(current_user.id), folder.name)
+            new_path = os.path.join(Storage.PATH, str(current_user.id), rename_request.new_name)
 
             if os.path.exists(old_path):
                 logger.info(f"Renaming folder from {folder.name} to {rename_request.new_name}")
@@ -413,8 +413,8 @@ async def rename_item(
                     FileMetadata.folder_id == folder_id
                 ).all()
 
-                for file in files:
-                    file.filepath = file.filepath.replace(old_path_part, new_path_part)
+                for each_file in files:
+                    each_file.filepath = each_file.filepath.replace(old_path_part, new_path_part)
 
                 subfolders = db.query(Folder).filter(
                     Folder.parent_id == folder_id

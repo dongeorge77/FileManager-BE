@@ -10,7 +10,7 @@ from app_constants.log_module import logger
 from app_constants.connectors import postgres_util, SessionLocal
 from scripts.models.file_management import FileInfo
 from scripts.models.folder_management import FolderCreate, Folder, DirectoryListing, ListDirectory, FolderInfo
-from app_constants.app_configurations import STORAGE_PATH
+from app_constants.app_configurations import Storage
 from scripts.models.file_management import FileMetadata
 from scripts.utils.common_utils import sync_directory_with_db, get_folder_path
 
@@ -51,7 +51,7 @@ async def list_directory(
 
         # Build response
         return DirectoryListing(
-            path=get_folder_path(db, folder_id, current_user.id) if folder_id else os.path.join(STORAGE_PATH,
+            path=get_folder_path(db, folder_id, current_user.id) if folder_id else os.path.join(Storage.PATH,
                                                                                                 str(current_user.id)),
             files=[
                 FileInfo(
@@ -119,7 +119,7 @@ async def create_folder(
         db.flush()  # Get the new folder's ID
 
         # Create physical folder on disk
-        folder_path = os.path.join(STORAGE_PATH, str(current_user.id), folder.name)
+        folder_path = os.path.join(Storage.PATH, str(current_user.id), folder.name)
         os.makedirs(folder_path, exist_ok=True)
 
         db.commit()

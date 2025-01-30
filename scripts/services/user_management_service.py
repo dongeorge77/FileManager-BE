@@ -9,7 +9,7 @@ from app_constants.log_module import logger
 from app_constants.url import Routes, UserAPI
 from scripts.models.user_management import User, Token, UserCreate
 from app_constants.connectors import postgres_util, SessionLocal
-from app_constants.app_configurations import ACCESS_TOKEN_EXPIRE_MINUTES, pwd_context, SECRET_KEY
+from app_constants.app_configurations import Constants
 from scripts.utils.common_utils import create_jwt_token
 from scripts.handlers.user_management_handler import get_current_user
 from scripts.models.file_management import FileMetadata
@@ -22,9 +22,9 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: SessionLoc
     try:
         logger.info(f"Running login service")
         user = db.query(User).filter(User.username == form_data.username).first()
-        if not user or not pwd_context.verify(form_data.password, user.hashed_password):
+        if not user or not Constants.pwd_context.verify(form_data.password, user.hashed_password):
             raise HTTPException(status_code=400, detail="Incorrect username or password")
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token_expires = timedelta(minutes=Constants.ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_jwt_token(
             data={"sub": user.username}, expires_delta=access_token_expires
         )
@@ -41,7 +41,7 @@ async def create_user(user: UserCreate, db: SessionLocal = Depends(postgres_util
         db_user = User(
             username=user.username,
             email=user.email,
-            hashed_password=pwd_context.hash(user.password),
+            hashed_password=Constants.pwd_context.hash(user.password),
             is_admin=user.is_admin,
             privilege=user.privilege
         )
@@ -73,7 +73,7 @@ async def user_profile(current_user: User = Depends(get_current_user)):
 @router.get("/shared/{share_token}")
 async def get_shared_file(share_token: str, db: SessionLocal = Depends(postgres_util.get_db)):
     try:
-        payload = jwt.decode(share_token, SECRET_KEY, algorithms=["HS256"])
+        payload = jwt.decode(share_token, Constants.SECRET_KEY, algorithms=["HS256"])
         file_id = payload.get("file_id")
         file = db.query(FileMetadata).filter(
             FileMetadata.id == file_id,

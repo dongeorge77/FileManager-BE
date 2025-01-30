@@ -14,7 +14,7 @@ from app_constants.log_module import logger
 from app_constants.connectors import postgres_util, SessionLocal
 from scripts.models.file_management import UploadFileModel, FileShare, FileInfo
 from scripts.models.folder_management import Folder
-from app_constants.app_configurations import STORAGE_PATH
+from app_constants.app_configurations import Storage
 from scripts.models.file_management import FileMetadata
 from scripts.utils.common_utils import create_jwt_token
 

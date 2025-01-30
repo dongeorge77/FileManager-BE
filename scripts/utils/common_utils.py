@@ -8,7 +8,7 @@ import mimetypes
 import psutil
 import threading
 
-from app_constants.app_configurations import STORAGE_PATH, SECRET_KEY
+from app_constants.app_configurations import Storage, Constants
 from scripts.models.file_management import FileMetadata
 from scripts.models.folder_management import Folder
 from app_constants.log_module import logger
@@ -22,34 +22,8 @@ def create_jwt_token(data: dict, expires_delta: timedelta = None):
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=15)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm="HS256")
+    encoded_jwt = jwt.encode(to_encode, Constants.SECRET_KEY, algorithm="HS256")
     return encoded_jwt
-
-
-# def get_folder_path(db, folder_id: int, user_id: int) -> str:
-#     """
-#     Recursively builds the complete path by traversing parent folders
-#     Returns the complete path from the base directory
-#     """
-#     path_components = []
-#     current_folder = db.query(Folder).filter(Folder.id == folder_id).first()
-#
-#     while current_folder:
-#         # Verify folder belongs to the user
-#         if current_folder.owner_id != user_id:
-#             raise ValueError("Access denied: Folder doesn't belong to the user")
-#
-#         path_components.append(current_folder.name)
-#         if current_folder.parent_id:
-#             current_folder = db.query(Folder).filter(Folder.id == current_folder.parent_id).first()
-#         else:
-#             break
-#
-#     # Reverse to get correct order (root -> leaf)
-#     path_components.reverse()
-#
-#     # Combine with base storage path
-#     return os.path.join(STORAGE_PATH, str(user_id), *path_components)
 
 
 def normalize_path(path: str) -> str:
@@ -71,7 +45,7 @@ def get_folder_path(db, folder_id: int, user_id: int) -> str | None:
             Folder.owner_id == user_id
         ).first() if current_folder.parent_id else None
 
-    return normalize_path(os.path.join(STORAGE_PATH, str(user_id), *path_parts))
+    return normalize_path(os.path.join(Storage.PATH, str(user_id), *path_parts))
 
 
 def sync_directory_with_db(user_id: int, db, folder_id: Optional[int] = None) -> None:
@@ -88,7 +62,7 @@ def sync_directory_with_db(user_id: int, db, folder_id: Optional[int] = None) ->
             if not base_path or not os.path.exists(base_path):
                 raise ValueError(f"Invalid folder_id {folder_id} for user {user_id}")
         else:
-            base_path = normalize_path(os.path.join(STORAGE_PATH, str(user_id)))
+            base_path = normalize_path(os.path.join(Storage.PATH, str(user_id)))
 
         os.makedirs(base_path, exist_ok=True)
 
@@ -105,7 +79,7 @@ def sync_directory_with_db(user_id: int, db, folder_id: Optional[int] = None) ->
             while current:
                 path_parts.insert(0, current.name)
                 current = folder_map.get(current.parent_id) if current.parent_id else None
-            full_path = os.path.join(STORAGE_PATH, str(user_id), *path_parts)
+            full_path = os.path.join(Storage.PATH, str(user_id), *path_parts)
             folder_paths[folder.id] = normalize_path(full_path)
 
         # Filter folders/files within the current sync scope
@@ -115,10 +89,10 @@ def sync_directory_with_db(user_id: int, db, folder_id: Optional[int] = None) ->
         }
         scope_files = {
             os.path.join(folder_paths[f.folder_id], f.filename) if f.folder_id
-            else os.path.join(STORAGE_PATH, str(user_id), f.filename): f
+            else os.path.join(Storage.PATH, str(user_id), f.filename): f
             for f in all_files
             if (f.folder_id and folder_paths.get(f.folder_id, "").startswith(base_path))
-               or (not f.folder_id and base_path == os.path.join(STORAGE_PATH, str(user_id)))
+               or (not f.folder_id and base_path == os.path.join(Storage.PATH, str(user_id)))
         }
 
         # Walk directory
