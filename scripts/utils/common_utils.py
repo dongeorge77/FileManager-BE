@@ -6,11 +6,14 @@ import jwt
 import mimetypes
 import psutil
 import threading
+import asyncio
 
 from app_constants.app_configurations import Storage, Constants
 from scripts.models.file_management import FileMetadata
 from scripts.models.folder_management import Folder
 from app_constants.log_module import logger
+from scripts.handlers.folder_management_handler import clean_directory
+
 sync_lock = threading.Lock()
 
 
@@ -162,11 +165,19 @@ def sync_directory_with_db(user_id: int, db, folder_id: Optional[int] = None) ->
 
         db.commit()
         logger.info(f"Directory sync completed for {base_path}")
+
+        result: dict = asyncio.run(clean_directory(db=db,
+                                                   current_user_id=user_id,
+                                                   current_folder_id=folder_id
+                                                   ))
+        logger.info(result)
+
     except Exception as e:
         db.rollback()
         logger.info(f"Sync failed: {str(e)}")
         traceback.print_exc()
     finally:
+        logger.info(f"Releasing thread lock...!")
         sync_lock.release()
 
 

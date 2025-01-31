@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app_constants.log_module import logger
 from app_constants.app_configurations import Service
 from scripts.services.file_management_service import router as file_management_router
-from scripts.services.folder_management import router as folder_management_router
+from scripts.services.folder_management_service import router as folder_management_router
 from scripts.services.item_management_service import router as item_management_router
 from scripts.services.user_management_service import router as user_management_router
 
