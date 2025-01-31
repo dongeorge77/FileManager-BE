@@ -1,5 +1,5 @@
 class BaseUrl:
-    base_url = "/api/v1"
+    base_url: str = "/api/v1"
 
 class Routes:
     user: str = f"{BaseUrl.base_url}/user"
@@ -11,8 +11,12 @@ class Routes:
 class UserAPI:
     login: str = "/login"
     create_user: str = "/create_user"
-    profile = "/profile"
-    share = "/shared/{share_token}"
+    profile: str = "/profile"
+    share: str = "/shared/{share_token}"
+    list_users: str = "/list_users"
+    update_user: str = "/update_user/{user_id}"
+    delete_user: str = "/delete_user/{user_id}"
+    user_metadata: str = "/metadata"
 
 class FilesAPI:
     upload: str = "/upload"

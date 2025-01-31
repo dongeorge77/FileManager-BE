@@ -1,18 +1,20 @@
+import copy
 import traceback
-
+from typing import List
 import jwt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from datetime import timedelta, datetime, timezone
 
 from app_constants.log_module import logger
 from app_constants.url import Routes, UserAPI
-from scripts.models.user_management import User, Token, UserCreate
+from scripts.models.user_management import User, Token, UserCreate, UserResponse, UserUpdate
 from app_constants.connectors import postgres_util, SessionLocal
 from app_constants.app_configurations import Constants
 from scripts.utils.common_utils import create_jwt_token
 from scripts.handlers.user_management_handler import get_current_user
 from scripts.models.file_management import FileMetadata
+from app_constants.json_keys import user_privileges
 
 
 router = APIRouter(prefix=Routes.user)
@@ -88,6 +90,71 @@ async def get_shared_file(share_token: str, db: SessionLocal = Depends(postgres_
     except jwt.DecodeError:
         raise HTTPException(status_code=400, detail="Invalid share token")
 
+@router.get(UserAPI.list_users, response_model=List[UserResponse])
+async def list_users(db: SessionLocal = Depends(postgres_util.get_db)):
+    try:
+        logger.info("Fetching list of users")
+        users = db.query(User).all()
+        return users
+    except Exception as e:
+        logger.error(f"Failed to fetch users: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
+# API to edit user details
+@router.put(UserAPI.update_user, response_model=UserResponse)
+async def edit_user(user_id: int, user_update: UserUpdate, db: SessionLocal = Depends(postgres_util.get_db)):
+    try:
+        logger.info(f"Editing user with ID: {user_id}")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
 
+        if user_update.username:
+            user.username = user_update.username
+        if user_update.email:
+            user.email = user_update.email
+        if user_update.is_admin is not None:
+            user.is_admin = user_update.is_admin
+        if user_update.privilege:
+            user.privilege = user_update.privilege
+
+        db.commit()
+        db.refresh(user)
+        return user
+    except Exception as e:
+        logger.error(f"Failed to edit user: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+# API to get user metadata
+@router.get(UserAPI.user_metadata, response_model=List[dict])
+async def get_user_metadata():
+    try:
+        logger.info("Fetching user metadata")
+        user_privileges_cp =copy.deepcopy(user_privileges)
+        return user_privileges_cp
+    except Exception as e:
+        logger.error(f"Failed to fetch user metadata: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@router.delete(UserAPI.delete_user, status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user(user_id: int, db: SessionLocal = Depends(postgres_util.get_db)):
+    try:
+        logger.info(f"Deleting user with ID: {user_id}")
+        user = db.query(User).filter(User.id == user_id).first()
+
+        # Check if the user exists
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        # Delete the user
+        db.delete(user)
+        db.commit()
+
+        logger.info(f"User with ID {user_id} deleted successfully")
+        return None  # Return 204 No Content on successful deletion
+
+    except Exception as e:
+        logger.error(f"Failed to delete user: {e}")
+        db.rollback()  # Rollback the transaction in case of an error
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal Server Error")
 
