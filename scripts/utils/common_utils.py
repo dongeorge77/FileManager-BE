@@ -198,3 +198,33 @@ def get_process_locking_file(filepath):
         except Exception:
             pass
     return None
+
+
+def format_size(size_in_bytes: int) -> str:
+    """
+    Format byte size into human readable format with error handling
+    """
+    try:
+        if size_in_bytes < 0:
+            return "0.00 B"
+
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if abs(size_in_bytes) < 1024.0:
+                return f"{size_in_bytes:.2f} {unit}"
+            size_in_bytes /= 1024.0
+        return f"{size_in_bytes:.2f} PB"
+    except Exception as e:
+        logger.error(f"Error formatting size: {str(e)}")
+        return "0.00 B"
+
+
+def get_storage_status(free_percentage: float) -> str:
+    """
+    Get storage status based on free space percentage
+    """
+    if free_percentage < 10:
+        return "CRITICAL"
+    elif free_percentage < 20:
+        return "WARNING"
+    else:
+        return "HEALTHY"

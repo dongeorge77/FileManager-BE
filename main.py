@@ -9,6 +9,7 @@ from scripts.services.file_management_service import router as file_management_r
 from scripts.services.folder_management_service import router as folder_management_router
 from scripts.services.item_management_service import router as item_management_router
 from scripts.services.user_management_service import router as user_management_router
+from scripts.services.system_service import router as system_service_router
 
 
 app = FastAPI()
@@ -17,6 +18,7 @@ app.include_router(file_management_router)
 app.include_router(folder_management_router)
 app.include_router(item_management_router)
 app.include_router(user_management_router)
+app.include_router(system_service_router)
 
 if Service.ENABLE_CORS in [True, "true", "True"]:
     app.add_middleware(

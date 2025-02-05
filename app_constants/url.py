@@ -6,6 +6,7 @@ class Routes:
     files: str = f"{BaseUrl.base_url}/files"
     folders: str = f"{BaseUrl.base_url}/folders"
     items: str = f"{BaseUrl.base_url}/items"
+    system: str = f"{BaseUrl.base_url}/system"
 
 
 class UserAPI:
@@ -33,4 +34,7 @@ class ItemsAPI:
     move: str = "/move"
     copy: str = "/copy"
     rename: str = "/rename"
+
+class SystemAPI:
+    get_storage: str = "/get_storage"
 
